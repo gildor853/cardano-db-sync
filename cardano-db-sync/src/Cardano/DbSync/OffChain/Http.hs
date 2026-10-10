@@ -5,7 +5,9 @@
 module Cardano.DbSync.OffChain.Http (
   httpGetOffChainPoolData,
   httpGetOffChainVoteData,
+  parseAndValidatePoolData,
   parseAndValidateVoteData,
+  expectedMetaHashToCheck,
   parseOffChainUrl,
   newRestrictedManager,
   -- Exported for testing.
@@ -57,15 +59,32 @@ httpGetOffChainPoolData ::
 httpGetOffChainPoolData manager request purl expectedMetaHash = do
   httpRes <- handleExceptT (convertHttpException url) req
   (respBS, respLBS, mContentType) <- hoistEither httpRes
+  hoistEither $ parseAndValidatePoolData respBS respLBS mContentType expectedMetaHash (Just url)
+  where
+    req = httpGetBytes manager request 600 512 url
+    url = OffChainPoolUrl purl
+
+-- | Validate and decode fetched pool metadata. When an expected hash is given,
+-- the Blake2b-256 hash of the raw bytes must match it. 'Nothing' skips the hash
+-- check (see 'expectedMetaHashToCheck'). 'spodHash' is always the hash of the
+-- bytes actually fetched.
+parseAndValidatePoolData ::
+  ByteString ->
+  LBS.ByteString ->
+  Maybe ByteString ->
+  Maybe PoolMetaHash ->
+  Maybe OffChainUrlType ->
+  Either OffChainFetchError SimplifiedOffChainPoolData
+parseAndValidatePoolData respBS respLBS mContentType expectedMetaHash murl = do
   let metadataHash = Crypto.digest (Proxy :: Proxy Crypto.Blake2b_256) respBS
   case unPoolMetaHash <$> expectedMetaHash of
     Just expectedMetaHashBs
       | metadataHash /= expectedMetaHashBs ->
-          left $ OCFErrHashMismatch (Just url) (renderByteArray expectedMetaHashBs) (renderByteArray metadataHash)
+          Left $ OCFErrHashMismatch murl (renderByteArray expectedMetaHashBs) (renderByteArray metadataHash)
     _ -> pure ()
   decodedMetadata <-
     case Aeson.eitherDecode' respLBS of
-      Left err -> left $ OCFErrJsonDecodeFail (Just url) (Text.pack err)
+      Left err -> Left $ OCFErrJsonDecodeFail murl (Text.pack err)
       Right res -> pure res
   pure $
     SimplifiedOffChainPoolData
@@ -78,9 +97,15 @@ httpGetOffChainPoolData manager request purl expectedMetaHash = do
         spodJson = Text.decodeUtf8 $ LBS.toStrict (Aeson.encode decodedMetadata)
       , spodContentType = mContentType
       }
-  where
-    req = httpGetBytes manager request 600 512 url
-    url = OffChainPoolUrl purl
+
+-- | The hash that fetched off-chain metadata (pool or vote) must match.
+-- Returns 'Nothing' when @skip_offchain_metadata_hash_check@ is enabled, which
+-- disables the Blake2b-256 check in 'parseAndValidatePoolData' and
+-- 'parseAndValidateVoteData'.
+expectedMetaHashToCheck :: Bool -> a -> Maybe a
+expectedMetaHashToCheck skipHashCheck metaHash
+  | skipHashCheck = Nothing
+  | otherwise = Just metaHash
 
 httpGetOffChainVoteData ::
   Bool ->

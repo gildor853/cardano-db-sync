@@ -27,6 +27,10 @@ tests =
       , ("isMultiAssetEnabled", prop_isMultiAssetEnabled)
       , ("isMetadataEnabled", prop_isMetadataEnabled)
       , ("isPlutusEnabled", prop_isPlutusEnabled)
+      , ("skip_offchain_metadata_hash_check defaults to disable", prop_skipOffchainMetadataHashCheckDefault)
+      , ("skip_offchain_metadata_hash_check parses enable/disable", prop_skipOffchainMetadataHashCheckParse)
+      , ("skip_offchain_metadata_hash_check rejects other values", prop_skipOffchainMetadataHashCheckRejectsInvalid)
+      , ("skip_offchain_metadata_hash_check overrides presets", prop_skipOffchainMetadataHashCheckPresetOverride)
       ]
 
 prop_syncInsertConfigFromJSON :: Property
@@ -109,6 +113,71 @@ prop_isPlutusEnabled = property $ do
 
   -- Plutus is enabled if it is not PlutusDisable
   isPlutusEnabled plutusCfg === (plutusCfg /= PlutusDisable)
+
+prop_skipOffchainMetadataHashCheckDefault :: Property
+prop_skipOffchainMetadataHashCheckDefault = withTests 1 $ property $ do
+  -- The hash check must stay on unless explicitly disabled.
+  for_
+    [ def
+    , fullInsertOptions
+    , onlyUTxOInsertOptions
+    , onlyGovInsertOptions
+    , disableAllInsertOptions
+    ]
+    $ \opts ->
+      sioSkipOffchainMetadataHashCheck opts === SkipOffchainMetadataHashCheckConfig False
+
+  -- Absent key keeps the check on.
+  fmap (sioSkipOffchainMetadataHashCheck . sicOptions) (Aeson.fromJSON [aesonQQ|{}|])
+    === Aeson.Success (SkipOffchainMetadataHashCheckConfig False)
+
+prop_skipOffchainMetadataHashCheckParse :: Property
+prop_skipOffchainMetadataHashCheckParse = withTests 1 $ property $ do
+  fmap
+    (sioSkipOffchainMetadataHashCheck . sicOptions)
+    (Aeson.fromJSON [aesonQQ|{ "skip_offchain_metadata_hash_check": "enable" }|])
+    === Aeson.Success (SkipOffchainMetadataHashCheckConfig True)
+  fmap
+    (sioSkipOffchainMetadataHashCheck . sicOptions)
+    (Aeson.fromJSON [aesonQQ|{ "skip_offchain_metadata_hash_check": "disable" }|])
+    === Aeson.Success (SkipOffchainMetadataHashCheckConfig False)
+  Aeson.toJSON (SkipOffchainMetadataHashCheckConfig True) === Aeson.String "enable"
+  Aeson.toJSON (SkipOffchainMetadataHashCheckConfig False) === Aeson.String "disable"
+
+prop_skipOffchainMetadataHashCheckRejectsInvalid :: Property
+prop_skipOffchainMetadataHashCheckRejectsInvalid = withTests 1 $ property $ do
+  for_
+    [ [aesonQQ|{ "skip_offchain_metadata_hash_check": "yes" }|]
+    , [aesonQQ|{ "skip_offchain_metadata_hash_check": true }|]
+    , [aesonQQ|{ "skip_offchain_metadata_hash_check": "Enable" }|]
+    ]
+    $ \json -> do
+      annotateShow json
+      case Aeson.fromJSON json :: Aeson.Result SyncInsertConfig of
+        Aeson.Error _ -> success
+        Aeson.Success _ -> failure
+
+prop_skipOffchainMetadataHashCheckPresetOverride :: Property
+prop_skipOffchainMetadataHashCheckPresetOverride = withTests 1 $ property $ do
+  let json =
+        [aesonQQ|
+          {
+            "preset": "full",
+            "offchain_pool_data": "enable",
+            "offchain_vote_data": "enable",
+            "skip_offchain_metadata_hash_check": "enable"
+          }
+        |]
+  Aeson.fromJSON json
+    === Aeson.Success
+      ( SyncInsertConfig
+          (Just FullInsertPreset)
+          fullInsertOptions
+            { sioOffchainPoolData = OffchainPoolDataConfig True
+            , sioOffchainVoteData = OffchainVoteDataConfig True
+            , sioSkipOffchainMetadataHashCheck = SkipOffchainMetadataHashCheckConfig True
+            }
+      )
 
 -- | Various JSON values that should generate the default config
 genDefaultJson :: Gen Aeson.Value

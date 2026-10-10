@@ -133,6 +133,7 @@ syncInsertOptions =
     <*> (GovernanceConfig <$> Gen.bool)
     <*> (OffchainPoolDataConfig <$> Gen.bool)
     <*> (OffchainVoteDataConfig <$> Gen.bool)
+    <*> (SkipOffchainMetadataHashCheckConfig <$> Gen.bool)
     <*> (PoolStatsConfig <$> Gen.bool)
     <*> Gen.element [JsonTypeText, JsonTypeJsonb, JsonTypeDisable]
     <*> (RemoveJsonbFromSchemaConfig <$> Gen.bool)

@@ -88,6 +88,7 @@ insertConfig = do
           , sioGovernance = GovernanceConfig False
           , sioOffchainPoolData = OffchainPoolDataConfig False
           , sioOffchainVoteData = OffchainVoteDataConfig False
+          , sioSkipOffchainMetadataHashCheck = SkipOffchainMetadataHashCheckConfig False
           , sioPoolStats = PoolStatsConfig False
           , sioJsonType = JsonTypeDisable
           , sioRemoveJsonbFromSchema = RemoveJsonbFromSchemaConfig False

@@ -27,6 +27,10 @@ tests =
         , prop_extractSyncOptionsOffchainPoolData
         )
       , ("extractSyncOptions passes governance", prop_extractSyncOptionsGov)
+      ,
+        ( "extractSyncOptions passes skip offchain metadata hash check"
+        , prop_extractSyncOptionsSkipOffchainMetadataHashCheck
+        )
       ]
 
 prop_extractSyncOptionsPruneConsumeMigration :: Property
@@ -64,6 +68,24 @@ prop_extractSyncOptionsOffchainPoolData = property $ do
 
   ioOffChainPoolData (soptInsertOptions syncOptions)
     === isOffchainPoolDataEnabled (sioOffchainPoolData (dncInsertOptions syncNodeConfig))
+
+prop_extractSyncOptionsSkipOffchainMetadataHashCheck :: Property
+prop_extractSyncOptionsSkipOffchainMetadataHashCheck = property $ do
+  syncNodeParams <- forAll Gen.syncNodeParams
+  abortOnPanic <- forAll Gen.bool
+  syncNodeConfig <-
+    forAllWith
+      (const "SyncNodeConfig") -- SyncNodeConfig does not have Show
+      Gen.syncNodeConfig
+
+  let syncOptions = extractSyncOptions syncNodeParams abortOnPanic syncNodeConfig
+      skipCfg = sioSkipOffchainMetadataHashCheck (dncInsertOptions syncNodeConfig)
+
+  cover 10 "skip enabled" (isSkipOffchainMetadataHashCheckEnabled skipCfg)
+  cover 10 "skip disabled" (not $ isSkipOffchainMetadataHashCheckEnabled skipCfg)
+
+  ioSkipOffChainMetadataHashCheck (soptInsertOptions syncOptions)
+    === isSkipOffchainMetadataHashCheckEnabled skipCfg
 
 prop_extractSyncOptionsDisable :: Property
 prop_extractSyncOptionsDisable = property $ do

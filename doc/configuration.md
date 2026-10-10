@@ -43,6 +43,7 @@ Below is a sample `insert_options` section that shows the recommended defaults:
     "governance": "enable",
     "offchain_pool_data": "disable",
     "offchain_vote_data": "disable",
+    "skip_offchain_metadata_hash_check": "disable",
     "json_type": "text",
     "disable_epoch": false
   }
@@ -68,6 +69,7 @@ Below is a sample `insert_options` section that shows the recommended defaults:
 | [governance](#governance)                    | `enum`     | Optional |
 | [offchain\_pool\_data](#offchain-pool-data)  | `enum`     | Optional |
 | [offchain\_vote\_data](#offchain-vote-data)  | `enum`     | Optional |
+| [skip\_offchain\_metadata\_hash\_check](#skip-offchain-metadata-hash-check) | `enum` | Optional |
 | [pool\_stat](#pool-stat)                     | `enum`     | Optional |
 | [remove\_jsonb_from_schema](#remove-jsonb-from-schema) | `enum`     | Optional |
 | [stop\_at\_block](#stop-at-block)            | `integer`  | Optional |
@@ -627,6 +629,65 @@ When enabled, the same URL restrictions apply as `offchain_pool_data` (HTTPS req
 ### Bypassing the URL restriction for local-cluster testing
 
 The private-IP restriction is enforced for every production deployment and cannot be disabled via configuration. For local-cluster test setups whose pools or governance anchors are served from `http://localhost:.../...` URLs, the `--allow-private-offchain-urls` CLI flag (see [command-line-options.md](command-line-options.md)) replaces the restriction with a no-op so the fetchers can connect to private, loopback, and link-local addresses. The flag is off by default and is intended for testing only.
+
+## Skip Offchain Metadata Hash Check
+
+`skip_offchain_metadata_hash_check`
+
+ * Type: `string`
+ * Default: `"disable"`
+
+**enum**: The value of this property must be equal to one of the following values:
+
+| Value       | Explanation                                                                         |
+| :---------- | :---------------------------------------------------------------------------------- |
+| `"enable"`  | Store fetched offchain metadata even if its hash does not match the on-chain hash. |
+| `"disable"` | Reject offchain metadata whose hash does not match the on-chain hash (default).    |
+
+Pool registrations and governance anchors commit to a Blake2b-256 hash of their offchain
+metadata. By default db-sync computes the hash of the fetched bytes and, if it differs from the
+on-chain hash, stores a hash mismatch error in `off_chain_pool_fetch_error` or
+`off_chain_vote_fetch_error` instead of the metadata.
+
+Setting this option to `"enable"` turns that check off for both fetchers:
+
+- **Pool metadata** (`offchain_pool_data`): metadata referenced by `pool_metadata_ref`.
+- **Vote metadata** (`offchain_vote_data`): metadata referenced by `voting_anchor` (DRep
+  registrations, governance action proposals, votes and committee resignations, including
+  anchors resolved through `ipfs_gateway`).
+
+Everything else is unchanged: the option has no effect unless `offchain_pool_data` and/or
+`offchain_vote_data` are enabled, and the URL restrictions, size limits, content type checks and
+JSON / CIP schema validation still apply. No preset enables this option.
+
+> [!WARNING]
+> With `"enable"`, db-sync trusts whatever the remote server returns. The stored metadata may
+> differ from what the pool operator or anchor author committed to on-chain, and can be changed by
+> whoever controls the URL at any time. Only use this if you understand and accept that risk.
+
+Consequences to be aware of when the option is enabled:
+
+- The `hash` column of `off_chain_pool_data` and `off_chain_vote_data` always holds the hash of
+  the bytes that were actually fetched. For mismatched metadata it differs from
+  `pool_metadata_ref.hash` / `voting_anchor.data_hash`, so compare these columns to find
+  metadata that would have been rejected.
+- Lookups by the on-chain hash (for example the SMASH server API) do not find mismatched pool
+  metadata.
+- Previously recorded hash mismatch errors are retried on the normal fetch error retry schedule
+  (at most once a day per entry), so metadata that was rejected earlier is picked up after
+  enabling the option without a resync.
+
+### Example
+
+```json
+{
+  "insert_options": {
+    "offchain_pool_data": "enable",
+    "offchain_vote_data": "enable",
+    "skip_offchain_metadata_hash_check": "enable"
+  }
+}
+```
 
 ## Pool Stat
 

@@ -370,6 +370,7 @@ extractSyncOptions snp aop snc =
         , ioPlutusExtra = isPlutusEnabled (sioPlutus (dncInsertOptions snc))
         , ioOffChainPoolData = useOffchainPoolData
         , ioOffChainVoteData = useOffchainVoteData
+        , ioSkipOffChainMetadataHashCheck = isSkipOffchainMetadataHashCheckEnabled (sioSkipOffchainMetadataHashCheck (dncInsertOptions snc))
         , ioPoolStats = isPoolStatsEnabled (sioPoolStats (dncInsertOptions snc))
         , ioGov = useGovernance
         , ioRemoveJsonbFromSchema = isRemoveJsonbFromSchemaEnabled (sioRemoveJsonbFromSchema (dncInsertOptions snc))

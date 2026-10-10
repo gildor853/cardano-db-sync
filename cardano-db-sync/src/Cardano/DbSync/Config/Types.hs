@@ -41,6 +41,7 @@ module Cardano.DbSync.Config.Types (
   GovernanceConfig (..),
   OffchainPoolDataConfig (..),
   OffchainVoteDataConfig (..),
+  SkipOffchainMetadataHashCheckConfig (..),
   JsonTypeConfig (..),
   SnapshotIntervalConfig (..),
   LedgerStateDir (..),
@@ -199,6 +200,7 @@ data SyncInsertOptions = SyncInsertOptions
   , sioGovernance :: GovernanceConfig
   , sioOffchainPoolData :: OffchainPoolDataConfig
   , sioOffchainVoteData :: OffchainVoteDataConfig
+  , sioSkipOffchainMetadataHashCheck :: SkipOffchainMetadataHashCheckConfig
   , sioPoolStats :: PoolStatsConfig
   , sioJsonType :: JsonTypeConfig
   , sioRemoveJsonbFromSchema :: RemoveJsonbFromSchemaConfig
@@ -299,6 +301,14 @@ newtype OffchainPoolDataConfig = OffchainPoolDataConfig
 
 newtype OffchainVoteDataConfig = OffchainVoteDataConfig
   { isOffchainVoteDataEnabled :: Bool
+  }
+  deriving (Eq, Show)
+
+-- | When enabled, off-chain pool and vote metadata is stored even if its
+-- Blake2b-256 hash does not match the hash committed on-chain. Disabled by
+-- default, which keeps the hash check strict.
+newtype SkipOffchainMetadataHashCheckConfig = SkipOffchainMetadataHashCheckConfig
+  { isSkipOffchainMetadataHashCheckEnabled :: Bool
   }
   deriving (Eq, Show)
 
@@ -502,6 +512,7 @@ parseOverrides obj baseOptions = do
     <*> obj .:? "governance" .!= sioGovernance baseOptions
     <*> obj .:? "offchain_pool_data" .!= sioOffchainPoolData baseOptions
     <*> obj .:? "offchain_vote_data" .!= sioOffchainVoteData baseOptions
+    <*> obj .:? "skip_offchain_metadata_hash_check" .!= sioSkipOffchainMetadataHashCheck baseOptions
     <*> obj .:? "pool_stat" .!= sioPoolStats baseOptions
     <*> obj .:? "json_type" .!= sioJsonType baseOptions
     <*> obj .:? "remove_jsonb_from_schema" .!= sioRemoveJsonbFromSchema baseOptions
@@ -526,6 +537,7 @@ optionsToList SyncInsertOptions {..} =
     , toJsonIfSet "governance" sioGovernance
     , toJsonIfSet "offchain_pool_data" sioOffchainPoolData
     , toJsonIfSet "offchain_vote_data" sioOffchainVoteData
+    , toJsonIfSet "skip_offchain_metadata_hash_check" sioSkipOffchainMetadataHashCheck
     , toJsonIfSet "pool_stat" sioPoolStats
     , toJsonIfSet "json_type" sioJsonType
     , toJsonIfSet "remove_jsonb_from_schema" sioRemoveJsonbFromSchema
@@ -550,6 +562,7 @@ instance FromJSON SyncInsertOptions where
       <*> obj .:? "governance" .!= sioGovernance def
       <*> obj .:? "offchain_pool_data" .!= sioOffchainPoolData def
       <*> obj .:? "offchain_vote_data" .!= sioOffchainVoteData def
+      <*> obj .:? "skip_offchain_metadata_hash_check" .!= sioSkipOffchainMetadataHashCheck def
       <*> obj .:? "pool_stat" .!= sioPoolStats def
       <*> obj .:? "json_type" .!= sioJsonType def
       <*> obj .:? "remove_jsonb_from_schema" .!= sioRemoveJsonbFromSchema def
@@ -569,6 +582,7 @@ instance ToJSON SyncInsertOptions where
       , "governance" .= sioGovernance
       , "offchain_pool_data" .= sioOffchainPoolData
       , "offchain_vote_data" .= sioOffchainVoteData
+      , "skip_offchain_metadata_hash_check" .= sioSkipOffchainMetadataHashCheck
       , "pool_stat" .= sioPoolStats
       , "json_type" .= sioJsonType
       , "remove_jsonb_from_schema" .= sioRemoveJsonbFromSchema
@@ -781,6 +795,15 @@ instance FromJSON OffchainVoteDataConfig where
       Just g -> pure (OffchainVoteDataConfig g)
       Nothing -> fail $ "unexpected offchain_vote_data: " <> show v
 
+instance ToJSON SkipOffchainMetadataHashCheckConfig where
+  toJSON = boolToEnableDisable . isSkipOffchainMetadataHashCheckEnabled
+
+instance FromJSON SkipOffchainMetadataHashCheckConfig where
+  parseJSON = Aeson.withText "skip_offchain_metadata_hash_check" $ \v ->
+    case enableDisableToBool v of
+      Just g -> pure (SkipOffchainMetadataHashCheckConfig g)
+      Nothing -> fail $ "unexpected skip_offchain_metadata_hash_check: " <> show v
+
 instance ToJSON JsonTypeConfig where
   toJSON JsonTypeText = "text"
   toJSON JsonTypeJsonb = "jsonb"
@@ -827,6 +850,7 @@ instance Default SyncInsertOptions where
       , sioGovernance = GovernanceConfig True
       , sioOffchainPoolData = OffchainPoolDataConfig False
       , sioOffchainVoteData = OffchainVoteDataConfig False
+      , sioSkipOffchainMetadataHashCheck = SkipOffchainMetadataHashCheckConfig False
       , sioPoolStats = PoolStatsConfig False
       , sioJsonType = JsonTypeText
       , sioRemoveJsonbFromSchema = RemoveJsonbFromSchemaConfig False
@@ -848,6 +872,7 @@ fullInsertOptions =
     , sioGovernance = GovernanceConfig True
     , sioOffchainPoolData = OffchainPoolDataConfig False
     , sioOffchainVoteData = OffchainVoteDataConfig False
+    , sioSkipOffchainMetadataHashCheck = SkipOffchainMetadataHashCheckConfig False
     , sioPoolStats = PoolStatsConfig True
     , sioJsonType = JsonTypeText
     , sioRemoveJsonbFromSchema = RemoveJsonbFromSchemaConfig False
@@ -869,6 +894,7 @@ onlyUTxOInsertOptions =
     , sioGovernance = GovernanceConfig True
     , sioOffchainPoolData = OffchainPoolDataConfig False
     , sioOffchainVoteData = OffchainVoteDataConfig False
+    , sioSkipOffchainMetadataHashCheck = SkipOffchainMetadataHashCheckConfig False
     , sioPoolStats = PoolStatsConfig False
     , sioJsonType = JsonTypeText
     , sioRemoveJsonbFromSchema = RemoveJsonbFromSchemaConfig False
@@ -897,6 +923,7 @@ disableAllInsertOptions =
     , sioPlutus = PlutusDisable
     , sioOffchainPoolData = OffchainPoolDataConfig False
     , sioOffchainVoteData = OffchainVoteDataConfig False
+    , sioSkipOffchainMetadataHashCheck = SkipOffchainMetadataHashCheckConfig False
     , sioPoolStats = PoolStatsConfig False
     , sioGovernance = GovernanceConfig False
     , sioJsonType = JsonTypeText

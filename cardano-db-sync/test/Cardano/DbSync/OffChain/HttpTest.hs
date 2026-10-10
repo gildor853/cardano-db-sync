@@ -3,10 +3,23 @@
 
 module Cardano.DbSync.OffChain.HttpTest (tests) where
 
+import qualified Cardano.Crypto.Hash.Blake2b as Crypto
+import qualified Cardano.Crypto.Hash.Class as Crypto
 import qualified Cardano.Db as DB
-import Cardano.DbSync.OffChain.Http (isPrivateAddr, parseOffChainUrl)
-import Cardano.DbSync.Types (OffChainFetchError (..), OffChainUrlType (..))
+import Cardano.DbSync.OffChain.Http (
+  expectedMetaHashToCheck,
+  isPrivateAddr,
+  parseAndValidatePoolData,
+  parseOffChainUrl,
+ )
+import Cardano.DbSync.Types (
+  OffChainFetchError (..),
+  OffChainUrlType (..),
+  SimplifiedOffChainPoolData (..),
+ )
 import Cardano.Prelude
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as Text
 import Hedgehog
 import qualified Network.Socket as Socket
@@ -35,6 +48,26 @@ tests =
       ,
         ( "isPrivateAddr classifies IPv4, IPv6, and IPv4-mapped IPv6 addresses"
         , prop_isPrivateAddrClassification
+        )
+      ,
+        ( "expectedMetaHashToCheck drops the hash only when skipping"
+        , prop_expectedMetaHashToCheck
+        )
+      ,
+        ( "parseAndValidatePoolData accepts metadata with a matching hash"
+        , prop_poolDataMatchingHash
+        )
+      ,
+        ( "parseAndValidatePoolData rejects a hash mismatch when the check is on"
+        , prop_poolDataHashMismatchRejected
+        )
+      ,
+        ( "parseAndValidatePoolData accepts a hash mismatch when the check is skipped"
+        , prop_poolDataHashMismatchSkipped
+        )
+      ,
+        ( "parseAndValidatePoolData still validates JSON when the hash check is skipped"
+        , prop_poolDataSkipStillValidatesJson
         )
       ]
 
@@ -121,6 +154,79 @@ prop_rejectsNonHttpSchemes = withTests 1 $ property $ do
         Right _ -> do
           annotate "Expected rejection but parse succeeded"
           failure
+
+poolMetadataBytes :: ByteString
+poolMetadataBytes =
+  "{\"name\":\"Test Pool\",\"description\":\"Test pool description\",\"ticker\":\"TEST\",\"homepage\":\"https://example.com\"}"
+
+blake2b256 :: ByteString -> ByteString
+blake2b256 = Crypto.digest (Proxy :: Proxy Crypto.Blake2b_256)
+
+-- | A hash that cannot match 'poolMetadataBytes'.
+wrongPoolMetaHash :: DB.PoolMetaHash
+wrongPoolMetaHash = DB.PoolMetaHash (BS.replicate 32 0)
+
+poolUrl :: Maybe OffChainUrlType
+poolUrl = Just $ asPoolUrl "https://example.com/pool.json"
+
+runPoolValidation :: ByteString -> Maybe DB.PoolMetaHash -> Either OffChainFetchError SimplifiedOffChainPoolData
+runPoolValidation bs mHash = parseAndValidatePoolData bs (LBS.fromStrict bs) Nothing mHash poolUrl
+
+prop_expectedMetaHashToCheck :: Property
+prop_expectedMetaHashToCheck = withTests 1 $ property $ do
+  expectedMetaHashToCheck False wrongPoolMetaHash === Just wrongPoolMetaHash
+  expectedMetaHashToCheck True wrongPoolMetaHash === Nothing
+
+prop_poolDataMatchingHash :: Property
+prop_poolDataMatchingHash = withTests 1 $ property $ do
+  let actualHash = blake2b256 poolMetadataBytes
+  for_ [False, True] $ \skipHashCheck -> do
+    annotateShow skipHashCheck
+    case runPoolValidation poolMetadataBytes (expectedMetaHashToCheck skipHashCheck (DB.PoolMetaHash actualHash)) of
+      Left err -> do
+        annotateShow err
+        failure
+      Right spod -> do
+        spodTickerName spod === "TEST"
+        spodHash spod === actualHash
+        spodBytes spod === poolMetadataBytes
+
+prop_poolDataHashMismatchRejected :: Property
+prop_poolDataHashMismatchRejected = withTests 1 $ property $ do
+  case runPoolValidation poolMetadataBytes (expectedMetaHashToCheck False wrongPoolMetaHash) of
+    Left (OCFErrHashMismatch murl _ _) -> murl === poolUrl
+    Left other -> do
+      annotateShow other
+      failure
+    Right _ -> do
+      annotate "Expected a hash mismatch error"
+      failure
+
+prop_poolDataHashMismatchSkipped :: Property
+prop_poolDataHashMismatchSkipped = withTests 1 $ property $ do
+  case runPoolValidation poolMetadataBytes (expectedMetaHashToCheck True wrongPoolMetaHash) of
+    Left err -> do
+      annotateShow err
+      failure
+    Right spod -> do
+      spodTickerName spod === "TEST"
+      -- The stored hash is the hash of the fetched bytes, not the on-chain hash.
+      spodHash spod === blake2b256 poolMetadataBytes
+      spodBytes spod === poolMetadataBytes
+
+prop_poolDataSkipStillValidatesJson :: Property
+prop_poolDataSkipStillValidatesJson = withTests 1 $ property $ do
+  let badTicker = "{\"name\":\"Test Pool\",\"description\":\"d\",\"ticker\":\"TOOLONG\",\"homepage\":\"https://example.com\"}"
+  for_ [badTicker, "not json"] $ \bs -> do
+    annotateShow bs
+    case runPoolValidation bs (expectedMetaHashToCheck True wrongPoolMetaHash) of
+      Left (OCFErrJsonDecodeFail _ _) -> success
+      Left other -> do
+        annotateShow other
+        failure
+      Right _ -> do
+        annotate "Expected a JSON decode error"
+        failure
 
 -- | Table-driven coverage of 'isPrivateAddr'. The IPv4-mapped IPv6 rows are
 -- the regression set for the SSRF gap fixed in PR #2132 (e.g. @::ffff:127.0.0.1@

@@ -91,6 +91,9 @@ data InsertOptions = InsertOptions
   , ioPlutusExtra :: !Bool
   , ioOffChainPoolData :: !Bool
   , ioOffChainVoteData :: !Bool
+  , ioSkipOffChainMetadataHashCheck :: !Bool
+  -- ^ When 'True', fetched off-chain pool and vote metadata is not checked
+  -- against the Blake2b-256 hash committed on-chain.
   , ioPoolStats :: !Bool
   , ioGov :: !Bool
   , ioRemoveJsonbFromSchema :: !Bool

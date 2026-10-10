@@ -22,7 +22,7 @@ module Cardano.DbSync.OffChain (
 ) where
 
 import qualified Cardano.Db as DB
-import Cardano.Db.Log (LogMessage, logInfo)
+import Cardano.Db.Log (LogMessage, logInfo, logWarning)
 import Cardano.DbSync.Api (determineIsolationLevel, getInsertOptions, getTrace)
 import Cardano.DbSync.Api.Types (InsertOptions (..), SyncEnv (..), SyncOptions (..))
 import Cardano.DbSync.Config.Types
@@ -230,6 +230,8 @@ runFetchOffChainPoolThread syncEnv = do
   -- if disable gov is active then don't run voting anchor thread
   when (ioOffChainPoolData iopts) $ do
     logInfo trce "Running Offchain Pool fetch thread"
+    when skipHashCheck $
+      logWarning trce "skip_offchain_metadata_hash_check is enabled: pool metadata is stored without checking its on-chain hash"
     pgconfig <- DB.runOrThrowIO (DB.readPGPass DB.PGPassDefaultEnv)
     connSetting <- case DB.toConnectionSetting pgconfig of
       Left err -> throwIO $ userError err
@@ -252,12 +254,13 @@ runFetchOffChainPoolThread syncEnv = do
             poolq <- atomically $ flushTBQueue (envOffChainPoolWorkQueue threadSyncEnv)
             manager <- newRestrictedManager allowPrivate
             now <- liftIO Time.getPOSIXTime
-            mapM_ (queuePoolInsert <=< fetchOffChainPoolData trce allowPrivate manager now) poolq
+            mapM_ (queuePoolInsert <=< fetchOffChainPoolData trce allowPrivate skipHashCheck manager now) poolq
       )
   where
     trce = getTrace syncEnv
     iopts = getInsertOptions syncEnv
     allowPrivate = soptAllowPrivateOffChainUrls (envOptions syncEnv)
+    skipHashCheck = ioSkipOffChainMetadataHashCheck iopts
 
     queuePoolInsert :: OffChainPoolResult -> IO ()
     queuePoolInsert = atomically . writeTBQueue (envOffChainPoolResultQueue syncEnv)
@@ -267,6 +270,8 @@ runFetchOffChainVoteThread syncEnv = do
   -- if disable gov is active then don't run voting anchor thread
   when (ioOffChainVoteData iopts && ioGov iopts) $ do
     logInfo trce "Running Offchain Vote Anchor fetch thread"
+    when skipHashCheck $
+      logWarning trce "skip_offchain_metadata_hash_check is enabled: vote anchor metadata is stored without checking its on-chain hash"
     pgconfig <- DB.runOrThrowIO (DB.readPGPass DB.PGPassDefaultEnv)
     connSetting <- case DB.toConnectionSetting pgconfig of
       Left err -> throwIO $ userError err
@@ -289,13 +294,14 @@ runFetchOffChainVoteThread syncEnv = do
                 loadOffChainVoteWorkQueue trce (envOffChainVoteWorkQueue threadSyncEnv)
             voteq <- atomically $ flushTBQueue (envOffChainVoteWorkQueue threadSyncEnv)
             now <- liftIO Time.getPOSIXTime
-            mapM_ (queueVoteInsert <=< fetchOffChainVoteData allowPrivate gateways now) voteq
+            mapM_ (queueVoteInsert <=< fetchOffChainVoteData allowPrivate skipHashCheck gateways now) voteq
       )
   where
     trce = getTrace syncEnv
     iopts = getInsertOptions syncEnv
     gateways = dncIpfsGateway $ envSyncNodeConfig syncEnv
     allowPrivate = soptAllowPrivateOffChainUrls (envOptions syncEnv)
+    skipHashCheck = ioSkipOffChainMetadataHashCheck iopts
 
     queueVoteInsert :: OffChainVoteResult -> IO ()
     queueVoteInsert = atomically . writeTBQueue (envOffChainVoteResultQueue syncEnv)
@@ -307,13 +313,16 @@ tDelay = threadDelay 300_000_000
 ---------------------------------------------------------------------------------------------------------------------------------
 -- Fetch OffChain data
 ---------------------------------------------------------------------------------------------------------------------------------
-fetchOffChainPoolData :: Trace IO LogMessage -> Bool -> Http.Manager -> Time.POSIXTime -> OffChainPoolWorkQueue -> IO OffChainPoolResult
-fetchOffChainPoolData _tracer allowPrivate manager time oPoolWorkQ =
+
+-- | Fetch the metadata of one pool. When @skipHashCheck@ is 'True', the fetched
+-- bytes are not checked against the on-chain metadata hash.
+fetchOffChainPoolData :: Trace IO LogMessage -> Bool -> Bool -> Http.Manager -> Time.POSIXTime -> OffChainPoolWorkQueue -> IO OffChainPoolResult
+fetchOffChainPoolData _tracer allowPrivate skipHashCheck manager time oPoolWorkQ =
   convert <<$>> runExceptT $ do
     let url = oPoolWqUrl oPoolWorkQ
         metaHash = oPoolWqMetaHash oPoolWorkQ
     request <- parseOffChainUrl allowPrivate $ OffChainPoolUrl url
-    httpGetOffChainPoolData manager request url (Just metaHash)
+    httpGetOffChainPoolData manager request url (expectedMetaHashToCheck skipHashCheck metaHash)
   where
     convert :: Either OffChainFetchError SimplifiedOffChainPoolData -> OffChainPoolResult
     convert eres =
@@ -338,12 +347,14 @@ fetchOffChainPoolData _tracer allowPrivate manager time oPoolWorkQ =
               , DB.offChainPoolFetchErrorRetryCount = retryCount (oPoolWqRetry oPoolWorkQ)
               }
 
-fetchOffChainVoteData :: Bool -> [Text] -> Time.POSIXTime -> OffChainVoteWorkQueue -> IO OffChainVoteResult
-fetchOffChainVoteData allowPrivate gateways time oVoteWorkQ =
+-- | Fetch the metadata of one voting anchor. When @skipHashCheck@ is 'True', the
+-- fetched bytes are not checked against the on-chain anchor data hash.
+fetchOffChainVoteData :: Bool -> Bool -> [Text] -> Time.POSIXTime -> OffChainVoteWorkQueue -> IO OffChainVoteResult
+fetchOffChainVoteData allowPrivate skipHashCheck gateways time oVoteWorkQ =
   convert <<$>> runExceptT $ do
     let url = oVoteWqUrl oVoteWorkQ
         metaHash = oVoteWqMetaHash oVoteWorkQ
-    httpGetOffChainVoteData allowPrivate gateways url (Just metaHash) (oVoteWqType oVoteWorkQ)
+    httpGetOffChainVoteData allowPrivate gateways url (expectedMetaHashToCheck skipHashCheck metaHash) (oVoteWqType oVoteWorkQ)
   where
     convert :: Either OffChainFetchError SimplifiedOffChainVoteData -> OffChainVoteResult
     convert eres =

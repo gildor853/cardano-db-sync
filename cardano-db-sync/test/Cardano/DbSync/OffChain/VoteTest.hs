@@ -3,10 +3,13 @@
 
 module Cardano.DbSync.OffChain.VoteTest (tests) where
 
+import qualified Cardano.Crypto.Hash.Blake2b as Crypto
+import qualified Cardano.Crypto.Hash.Class as Crypto
 import qualified Cardano.Db as DB
 import Cardano.DbSync.Error (runOrThrowIO)
-import Cardano.DbSync.OffChain.Http (parseAndValidateVoteData)
+import Cardano.DbSync.OffChain.Http (expectedMetaHashToCheck, parseAndValidateVoteData)
 import qualified Cardano.DbSync.OffChain.Vote.Types as Vote
+import Cardano.DbSync.Types (OffChainFetchError (..))
 import Cardano.Prelude hiding ((%))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -26,7 +29,69 @@ tests =
       , ("parseAndValidateVoteData handles valid JSON but invalid structure", prop_parseValidJsonInvalidStructure)
       , ("parseAndValidateVoteData handles unparseable JSON", prop_parseUnparseableJson)
       , ("image contentUrl base64 data URI keeps its prefix (#1966)", prop_imageDataUriKeepsPrefix)
+      , ("parseAndValidateVoteData accepts a matching hash", prop_voteDataMatchingHash)
+      , ("parseAndValidateVoteData rejects a hash mismatch when the check is on", prop_voteDataHashMismatchRejected)
+      , ("parseAndValidateVoteData accepts a hash mismatch when the check is skipped", prop_voteDataHashMismatchSkipped)
       ]
+
+-- | A hash that cannot match any of the test files.
+wrongVoteMetaHash :: DB.VoteMetaHash
+wrongVoteMetaHash = DB.VoteMetaHash (BS.replicate 32 0)
+
+blake2b256 :: ByteString -> ByteString
+blake2b256 = Crypto.digest (Proxy :: Proxy Crypto.Blake2b_256)
+
+prop_voteDataMatchingHash :: Property
+prop_voteDataMatchingHash = withTests 1 $ property $ do
+  fileContent <- liftIO $ BS.readFile "test/testfiles/valid-vote-minimal.jsonld"
+  let actualHash = blake2b256 fileContent
+  for_ [False, True] $ \skipHashCheck -> do
+    annotateShow skipHashCheck
+    result <-
+      liftIO $
+        runExceptT $
+          parseAndValidateVoteData fileContent (LBS.fromStrict fileContent) (expectedMetaHashToCheck skipHashCheck (DB.VoteMetaHash actualHash)) DB.DrepAnchor Nothing
+    case result of
+      Left err -> do
+        annotateShow err
+        failure
+      Right (mocvd, _val, metaHash, _warning, isValidJson) -> do
+        metaHash === actualHash
+        assert isValidJson
+        assert $ isJust mocvd
+
+prop_voteDataHashMismatchRejected :: Property
+prop_voteDataHashMismatchRejected = withTests 1 $ property $ do
+  fileContent <- liftIO $ BS.readFile "test/testfiles/valid-vote-minimal.jsonld"
+  result <-
+    liftIO $
+      runExceptT $
+        parseAndValidateVoteData fileContent (LBS.fromStrict fileContent) (expectedMetaHashToCheck False wrongVoteMetaHash) DB.DrepAnchor Nothing
+  case result of
+    Left OCFErrHashMismatch {} -> success
+    Left other -> do
+      annotateShow other
+      failure
+    Right _ -> do
+      annotate "Expected a hash mismatch error"
+      failure
+
+prop_voteDataHashMismatchSkipped :: Property
+prop_voteDataHashMismatchSkipped = withTests 1 $ property $ do
+  fileContent <- liftIO $ BS.readFile "test/testfiles/valid-vote-minimal.jsonld"
+  result <-
+    liftIO $
+      runExceptT $
+        parseAndValidateVoteData fileContent (LBS.fromStrict fileContent) (expectedMetaHashToCheck True wrongVoteMetaHash) DB.DrepAnchor Nothing
+  case result of
+    Left err -> do
+      annotateShow err
+      failure
+    Right (mocvd, _val, metaHash, _warning, isValidJson) -> do
+      -- The stored hash is the hash of the fetched bytes, not the on-chain hash.
+      metaHash === blake2b256 fileContent
+      assert isValidJson
+      assert $ isJust mocvd
 
 -- | Regression test for #1966: an inline base64 data URI contentUrl is stored verbatim, not stripped.
 prop_imageDataUriKeepsPrefix :: Property
